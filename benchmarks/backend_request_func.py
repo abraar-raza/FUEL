@@ -231,6 +231,9 @@ async def async_request_deepspeed_mii(
 async def async_request_openai_completions(
     request_func_input: RequestFuncInput,
     pbar: Optional[tqdm] = None,
+    gpu_monitors: Optional[List] = None,
+    gpu_monitor_flag: Optional[int] = None,
+    cpu_monitors: Optional[List] = None,
 ) -> RequestFuncOutput:
     api_url = request_func_input.api_url
     assert api_url.endswith(
@@ -245,7 +248,7 @@ async def async_request_openai_completions(
             "temperature": 0.0,
             "best_of": request_func_input.best_of,
             "max_tokens": request_func_input.output_len,
-            "logprobs": 10,
+            "logprobs": 1,
             "stream": True,
         }
         headers = {
@@ -254,6 +257,15 @@ async def async_request_openai_completions(
 
         output = RequestFuncOutput()
         output.prompt_len = request_func_input.prompt_len
+        output.prompt = request_func_input.prompt
+        output.arrival_time = time.time()
+        cumulative_logprob = 0.0
+        if gpu_monitor_flag == 1:
+            for gpu_monitor in (gpu_monitors or []):
+                gpu_monitor.start()
+            for cpu_monitor in (cpu_monitors or []):
+                if cpu_monitor is not None:
+                    cpu_monitor.start()
 
         # The async method does not provide insight into scheduling details, e.g., arrival times, first scheduled time, etc.
         # Only the client-side time is recorded. However, we may still record the request send time, ignoring the transmission delay and treating it as the arrival time. We can also record the completion time, and using completion time - latency, we can approximate the first scheduled time.
@@ -287,6 +299,7 @@ async def async_request_openai_completions(
                                 if ttft == 0.0:
                                     ttft = time.perf_counter() - st
                                     output.ttft = ttft
+                                    output.first_token_time = time.time()
 
                                 # Decoding phase
                                 else:
@@ -295,12 +308,17 @@ async def async_request_openai_completions(
 
                                 most_recent_timestamp = timestamp
                                 generated_text += data["choices"][0]["text"]
-                                print("#####################")
-                                print(data)
+                                lp = data["choices"][0].get("logprobs")
+                                if lp and lp.get("token_logprobs"):
+                                    cumulative_logprob += sum(
+                                        x for x in lp["token_logprobs"]
+                                        if x is not None)
 
                     output.generated_text = generated_text
                     output.success = True
                     output.latency = latency
+                    output.completion_time = time.time()
+                    output.cumulative_logprob = cumulative_logprob
                 else:
                     output.error = response.reason or ""
                     output.success = False
@@ -311,6 +329,12 @@ async def async_request_openai_completions(
 
     if pbar:
         pbar.update(1)
+    if gpu_monitor_flag == 0:
+        for gpu_monitor in (gpu_monitors or []):
+            gpu_monitor.stop()
+        for cpu_monitor in (cpu_monitors or []):
+            if cpu_monitor is not None:
+                cpu_monitor.stop()
     return output
 
 
