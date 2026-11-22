@@ -319,10 +319,9 @@ def sample_sharegpt_requests(
         completion = dataset[i][1]
         completion_token_ids = tokenizer(completion).input_ids
         prompt_len = len(prompt_token_ids)
-        output_len = len(completion_token_ids
-                         ) if fixed_output_len is None else fixed_output_len
-        
-        output_len = 5000
+        # max_tokens cap; requests normally stop at EOS. Default 5000 (the
+        # previous hard-coded value); --sharegpt-output-len overrides it.
+        output_len = 5000 if fixed_output_len is None else fixed_output_len
         if len(real_prompt_token_ids) < 10 or output_len < 4:
             # Prune too short sequences.
             continue
