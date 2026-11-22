@@ -38,11 +38,11 @@ stop_server() {
   SERVER_PID=
 }
 
-# run_bench MODEL DATASET_NAME DATASET_PATH NUM_PROMPTS RATE SEED RESULT_DIR RESULT_FILE LOG
+# run_bench MODEL DATASET_NAME DATASET_PATH NUM_PROMPTS RATE SEED RESULT_DIR RESULT_FILE LOG [EXTRA ARGS...]
 run_bench() {
   cd /workspace
   $PY $BENCH --backend vllm --host 127.0.0.1 --port $PORT --endpoint /v1/completions \
      --model "$1" --dataset-name "$2" --dataset-path "$3" --num-prompts "$4" \
      --request-rate "$5" --seed "$6" --save-result --result-dir "$7" --result-filename "$8" \
-     --gpu-ids 0 --gpu-monitor-interval 0.025 --disable-tqdm > "$9" 2>&1
+     --gpu-ids 0 --gpu-monitor-interval 0.025 --disable-tqdm "${@:10}" > "$9" 2>&1
 }

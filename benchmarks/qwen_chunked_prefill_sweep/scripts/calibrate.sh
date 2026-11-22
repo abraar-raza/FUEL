@@ -4,6 +4,7 @@
 source /workspace/sweep/serve_lib.sh
 OUT=/workspace/results/calibration
 N=${N:-250}
+SHAREGPT_MAX_OUT=${SHAREGPT_MAX_OUT:-2048}   # max_tokens cap for ShareGPT (arxiv cap: max(abstract, 200))
 MODELS=(${MODELS:-Qwen2.5-3B-Instruct Qwen2.5-14B-Instruct})
 CHUNKS=(${CHUNKS:-none 256 512 1024 2048 4096})
 SEEDS=(${SEEDS:-0 1 2})
@@ -25,7 +26,8 @@ for m in "${MODELS[@]}"; do
     f=${name}_seed${s}.json
     [[ -s $d/$f ]] && { echo "  skip $f"; continue; }
     t0=$SECONDS
-    run_bench /workspace/models/$m $name $path $N inf $s $d $f $d/${name}_seed${s}.log
+    extra=(); [[ $name == sharegpt ]] && extra=(--sharegpt-output-len $SHAREGPT_MAX_OUT)
+    run_bench /workspace/models/$m $name $path $N inf $s $d $f $d/${name}_seed${s}.log "${extra[@]}"
     rc=$?
     if [[ -s $d/$f ]]; then
       echo "$(date +%T)   $tag $f ok ($((SECONDS-t0))s) $($PY -c "import json;r=json.load(open('$d/$f'));print('rps=%.3f ok=%d E=%.0fJ'%(r['request_throughput'],r['completed'],r['energy_stats']['total_energy']))")"

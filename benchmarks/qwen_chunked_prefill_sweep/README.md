@@ -35,8 +35,12 @@ Everything else is vLLM 0.34 default. Notes that affect interpretation:
   measured prefills would hit cache.
 - **`max_num_seqs` follows vLLM's default `min(1024, max_num_batched_tokens)`**, i.e. 256 / 512 for
   chunk 256 / 512 and 1024 otherwise. Concurrency headroom therefore co-varies with chunk size.
-- ShareGPT output cap is 5000 tokens (hard-coded in the sampler); requests normally stop at EOS.
+- ShareGPT output cap (`max_tokens`) is **2048** in calibration (`--sharegpt-output-len 2048`;
+  the sampler default is 5000). Requests normally stop at EOS; the cap bounds runaway generations,
+  which at `rate=inf` would otherwise set the run duration on their own (in the smoke run one
+  5000-token request took 20.1 s vs 7.7 s for the next slowest).
   arxiv output cap is `max(len(abstract), 200)`; prompts > 30k tokens are dropped.
+- The smoke run (`results/smoke`) used the 5000-token default.
 
 ## Calibration procedure
 
@@ -65,6 +69,9 @@ Raw benchmark JSONs (with prompts, generated text and per-token ITLs) are not co
 
 ## Measurement fixes made for this sweep
 
-See the commits on this branch: the OpenAI-completions backend now drives the power monitors,
-and the measurement window ends when *all* measured requests finish (previously the last-indexed
-request, which at `rate=inf` truncated a smoke run from 20.1 s to 0.45 s).
+See the commits on this branch:
+- the OpenAI-completions backend now drives the power monitors;
+- the measurement window ends when *all* measured requests finish (previously the last-indexed
+  request, which at `rate=inf` truncated a smoke run from 20.1 s to 0.45 s);
+- the client accepts streamed lines up to 64 MiB (aiohttp's 512 KiB default dropped a long,
+  successful request with `LineTooLong` in the first calibration attempt).
