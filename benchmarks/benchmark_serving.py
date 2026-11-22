@@ -574,6 +574,55 @@ def sample_summeval_requests(
     return filtered_dataset
 
 
+def sample_arxiv_requests(
+    dataset_path: str,
+    num_requests: int,
+    tokenizer: PreTrainedTokenizerBase,
+    fixed_input_len: Optional[int] = None,
+    fixed_output_len: Optional[int] = None,
+    max_prompt_len: int = 30000,
+) -> List[Tuple[str, int, int, None]]:
+    """arxiv summarization jsonl ({"article", "abstract"} per line).
+    Mirrors sample_summeval_requests: same prompt, output cap =
+    max(len(abstract tokens), 200). Prompts longer than max_prompt_len are
+    dropped so prompt + output fits the 32k context."""
+    if fixed_output_len is not None and fixed_output_len < 4:
+        raise ValueError("output_len too small")
+    with open(dataset_path) as f:
+        dataset = [json.loads(line) for line in f if line.strip()]
+    dataset = [(d["article"], d["abstract"]) for d in dataset]
+    random.shuffle(dataset)
+    base_prompt = "Summarize the following text:\n"
+    filtered_dataset: List[Tuple[str, int, int, None]] = []
+    for article, abstract in dataset:
+        if len(filtered_dataset) == num_requests:
+            break
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": base_prompt + article}
+        ]
+        text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True)
+        prompt_token_ids = tokenizer(text).input_ids
+        if fixed_input_len is not None:
+            if len(prompt_token_ids) >= fixed_input_len:
+                text = tokenizer.decode(prompt_token_ids[:fixed_input_len])
+                prompt_token_ids = prompt_token_ids[:fixed_input_len]
+            else:
+                continue
+        prompt_len = len(prompt_token_ids)
+        output_len = (len(tokenizer(abstract).input_ids)
+                      if fixed_output_len is None else fixed_output_len)
+        output_len = max(output_len, 200)
+        if prompt_len < 4 or prompt_len > max_prompt_len:
+            continue
+        filtered_dataset.append((text, prompt_len, output_len, None))
+    if len(filtered_dataset) < num_requests:
+        warnings.warn(f"arxiv: only {len(filtered_dataset)} usable prompts "
+                      f"(< {num_requests} requested)")
+    return filtered_dataset
+
+
 def sample_newsqa_requests(
     dataset_path: str,
     num_requests: int,
@@ -1373,6 +1422,15 @@ def main(args: argparse.Namespace):
             fixed_output_len=args.summeval_output_len,
         )
 
+    elif args.dataset_name == "arxiv":
+        input_requests = sample_arxiv_requests(
+            dataset_path=args.dataset_path,
+            num_requests=args.num_prompts,
+            tokenizer=tokenizer,
+            fixed_input_len=args.summeval_input_len,
+            fixed_output_len=args.summeval_output_len,
+        )
+
     elif args.dataset_name == "newsqa":
         input_requests = sample_newsqa_requests(
             dataset_path=args.dataset_path,
@@ -1579,7 +1637,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="sharegpt",
-        choices=["sharegpt", "sonnet", "random", "hf", "longbench", "humaneval", "summeval", "newsqa", "gsm8k", "mbpp", "alpaca", "lmsyschat", "arenahard"],
+        choices=["sharegpt", "arxiv", "sonnet", "random", "hf", "longbench", "humaneval", "summeval", "newsqa", "gsm8k", "mbpp", "alpaca", "lmsyschat", "arenahard"],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument("--dataset-path",
