@@ -1008,6 +1008,19 @@ def calculate_metrics(
     return metrics, actual_output_lens
 
 
+async def _stop_monitors_when_done(measured_tasks, gpu_monitors, cpu_monitor):
+    """Wait for all measured requests, stop power monitors, return end time
+    (latest measured completion; falls back to now if none succeeded)."""
+    done = await asyncio.gather(*measured_tasks)
+    end = time.time()
+    for m in (gpu_monitors or []):
+        m.stop()
+    if cpu_monitor is not None:
+        cpu_monitor.stop()
+    times = [o.completion_time for o in done if o.completion_time is not None]
+    return max(times) if times else end
+
+
 async def benchmark(
     backend: str,
     api_url: str,
@@ -1115,7 +1128,14 @@ async def benchmark(
             tasks.append(
                 asyncio.create_task(
                     request_func(request_func_input=request_func_input,
-                                pbar=pbar,gpu_monitors=gpu_monitors,gpu_monitor_flag=0, cpu_monitors=[cpu_monitor])))
+                                pbar=pbar,gpu_monitors=gpu_monitors)))
+            # Stop monitors only once *every* measured request has finished
+            # (not when the last-indexed one does: at high/inf rates that is
+            # an arbitrary request and truncates the window).
+            measure_end_task = asyncio.create_task(
+                _stop_monitors_when_done(
+                    tasks[warmup_length:warmup_length + len(input_requests)],
+                    gpu_monitors, cpu_monitor))
             print("Benchmark (nearly) completed. Starting end up...")
         else:
             tasks.append(
@@ -1124,8 +1144,9 @@ async def benchmark(
                                 pbar=pbar,gpu_monitors=gpu_monitors)))
         warmup_cnt += 1
     outputs: List[RequestFuncOutput] = await asyncio.gather(*tasks)
+    benchmark_end_time = await measure_end_task
     outputs = outputs[warmup_length:warmup_length + len(input_requests)]
-    benchmark_duration = outputs[-1].completion_time - benchmark_start_time
+    benchmark_duration = benchmark_end_time - benchmark_start_time
 
     if profile:
         print("Stopping profiler...")
@@ -1177,7 +1198,7 @@ async def benchmark(
     result = {
         "duration": benchmark_duration,
         "start_time": benchmark_start_time,
-        "end_time": outputs[-1].completion_time,
+        "end_time": benchmark_end_time,
         "truncated_time": args.gpu_monitor_truncate,
         "completed": metrics.completed,
         "total_input_tokens": metrics.total_input,
