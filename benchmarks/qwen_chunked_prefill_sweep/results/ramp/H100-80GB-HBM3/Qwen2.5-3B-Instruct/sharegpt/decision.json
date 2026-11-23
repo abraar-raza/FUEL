@@ -1,0 +1,72 @@
+{
+  "gpu": "H100-80GB-HBM3",
+  "model": "Qwen2.5-3B-Instruct",
+  "dataset": "sharegpt",
+  "baseline_chunk": "2048",
+  "seed": 0,
+  "prompts_per_step": 100,
+  "probe_inf_rps": 9.533659413586971,
+  "criterion": {
+    "served_over_offered_min": 0.95,
+    "median_ttft_max_x_lowest_step": 3.0,
+    "served_over_offered": "1/(1+max(0, Theil-Sen slope of e2e latency vs arrival time))"
+  },
+  "saturation_rps": 5.7202,
+  "saturation_capped_by_ramp": false,
+  "sweep_frac": 0.75,
+  "sweep_rate_rps": 4.2902,
+  "steps": [
+    {
+      "frac_of_R": 0.3,
+      "rate_rps": 2.8601,
+      "offered_rps": 3.1703048274765795,
+      "latency_slope": 0.01829498428004432,
+      "served_rps": 3.1133462075510963,
+      "served_over_offered": 0.9820337087361976,
+      "median_ttft_ms": 38.10648602666333,
+      "harness_rps": 2.6628484585262844,
+      "failed": 0,
+      "ttft_over_base": 1.0,
+      "pass": true
+    },
+    {
+      "frac_of_R": 0.5,
+      "rate_rps": 4.7668,
+      "offered_rps": 5.277201532837862,
+      "latency_slope": 0.01719936692825201,
+      "served_rps": 5.187971703889281,
+      "served_over_offered": 0.9830914494371041,
+      "median_ttft_ms": 38.53372047888115,
+      "harness_rps": 3.9179856340103285,
+      "failed": 0,
+      "ttft_over_base": 1.0112115940556388,
+      "pass": true
+    },
+    {
+      "frac_of_R": 0.6,
+      "rate_rps": 5.7202,
+      "offered_rps": 6.326003936924803,
+      "latency_slope": 0.0368646912309893,
+      "served_rps": 6.10108916855335,
+      "served_over_offered": 0.9644459961432164,
+      "median_ttft_ms": 36.327370995422825,
+      "harness_rps": 4.3870151796144885,
+      "failed": 0,
+      "ttft_over_base": 0.9533120154402154,
+      "pass": true
+    },
+    {
+      "frac_of_R": 0.7,
+      "rate_rps": 6.6736,
+      "offered_rps": 7.372510702261151,
+      "latency_slope": 0.05320890251609703,
+      "served_rps": 7.0000459402197945,
+      "served_over_offered": 0.9494792510878117,
+      "median_ttft_ms": 38.67517749313265,
+      "harness_rps": 4.797785372843721,
+      "failed": 0,
+      "ttft_over_base": 1.0149237446368422,
+      "pass": false
+    }
+  ]
+}

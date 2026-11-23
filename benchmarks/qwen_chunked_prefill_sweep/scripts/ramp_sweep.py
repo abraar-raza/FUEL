@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-"""Saturation ramp (fixed baseline chunk) + 75% sweep over all chunk sizes.
+"""Probe (fixed baseline chunk) + sweep over all chunk sizes at RATE_FRACS[0] x probe throughput
+(falling back to lower fractions if the keep-up check fails).
 
 For each (GPU, model, dataset):
-  1. probe:  request_rate=inf, RAMP_N prompts, seed 0, chunk=BASELINE -> R (req/s)
-  2. ramp:   offered rates f*R for f in RAMP_FRACS (extended by EXT_FRACS while every step passes)
-             step passes iff
-               served/offered >= THRU_MIN   served/offered = 1/(1+s), s = Theil-Sen slope of
-                                            e2e latency vs arrival time (backlog growth)
-               median TTFT     <= TTFT_MAX_X * median TTFT of the lowest step
-             saturation rate = highest offered rate of the contiguous passing prefix
-  3. sweep:  every chunk size x seed at SWEEP_FRAC * saturation, SWEEP_N prompts, Poisson arrivals.
+  1. probe:  request_rate=inf, PROBE_N prompts, seed 0, chunk=BASELINE -> R (req/s)
+  2. rate:   RATE_FRACS[0] * R, shared by every chunk size and seed (Poisson arrivals)
+  3. sweep:  every chunk size x seed at that rate, SWEEP_N prompts. Baseline chunk runs first.
+  4. check:  the first sweep run of each (model, dataset) (baseline chunk, first seed) must keep up:
+               served/offered >= THRU_MIN and no failed request, where
+               served/offered = 1/(1+max(0,s)), s = Theil-Sen slope of e2e latency vs arrival time
+               (a growing backlog makes latency rise with arrival time).
+             If it fails, the failed result is kept as *_frac<f>_failed.json, the rate drops to the
+             next fraction in RATE_FRACS and the check run is repeated. Nothing else for that
+             (model, dataset) runs until a rate passes, so every chunk/seed shares one rate.
+             If every fraction fails, that (model, dataset) is skipped; the rest keeps going.
+  5. every other run is also tested for keep-up and logged as WARN if it falls behind
+     (log only, the run is kept).
+
+Rationale for RATE_FRACS[0] = 0.5: the full saturation ramps run for Qwen2.5-3B (earlier version of
+this script, commit e11f815; results under ramp/) put saturation at 0.60 R (sharegpt) and
+1.00 R (arxiv), so 0.5 R is below saturation on both.
 
 Resumable: any result JSON that already exists is reused. Run from /workspace.
 """
@@ -34,15 +44,13 @@ DATASETS = {"sharegpt": "/workspace/datasets/sharegpt.json",
 CHUNKS = os.environ.get("CHUNKS", "none 256 512 1024 2048 4096").split()
 SEEDS = [int(s) for s in os.environ.get("SEEDS", "0 1 2").split()]
 BASELINE = "2048"
-RAMP_N, SWEEP_N = 100, 250
-RAMP_FRACS = [0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-EXT_FRACS = [1.25, 1.5, 2.0]
-THRU_MIN, TTFT_MAX_X = 0.95, 3.0
-SWEEP_FRAC = 0.75
+PROBE_N, SWEEP_N = 100, 250
+RATE_FRACS = [0.5, 0.4, 0.3, 0.2]   # first is the target; the rest are fallbacks if the check fails
+THRU_MIN = 0.95
 SHAREGPT_MAX_OUT = 2048
 ROOT = "/workspace/results"
-RAMP_DIR = f"{ROOT}/ramp/{GPU_NAME}"
-SWEEP_DIR = f"{ROOT}/sweep75/{GPU_NAME}"
+PROBE_DIR = f"{ROOT}/ramp/{GPU_NAME}"   # probes live next to the 3B saturation ramps
+SWEEP_DIR = f"{ROOT}/sweep50/{GPU_NAME}"
 
 
 def log(msg):
@@ -126,7 +134,7 @@ def bench(model, dataset, n, rate, seed, out_json):
     return r
 
 
-# ---------------------------------------------------------------- ramp criterion
+# ---------------------------------------------------------------- keep-up criterion
 def latency_slope(arrivals, latencies):
     """Theil-Sen slope of end-to-end latency vs arrival time (s per s). ~0 when the server keeps
     up; s > 0 when a backlog builds. Output length is independent of arrival order, so it adds
@@ -151,47 +159,71 @@ def step_stats(r):
                 failed=sum(1 for e in r["errors"] if e))
 
 
-def ramp(srv, model, dataset):
-    d = f"{RAMP_DIR}/{model}/{dataset}"
-    dec_path = f"{d}/decision.json"
-    if os.path.exists(dec_path):
-        return json.load(open(dec_path))
-    srv.ensure(model, BASELINE, f"{RAMP_DIR}/{model}/server_chunk-{BASELINE}.log")
-    probe = bench(model, dataset, RAMP_N, "inf", 0, f"{d}/probe_inf.json")
+def get_rate(srv, model, dataset):
+    d = f"{PROBE_DIR}/{model}/{dataset}"
+    path = f"{d}/rate.json"
+    if os.path.exists(path):
+        return json.load(open(path))
+    srv.ensure(model, BASELINE, f"{PROBE_DIR}/{model}/server_chunk-{BASELINE}.log")
+    probe = bench(model, dataset, PROBE_N, "inf", 0, f"{d}/probe_inf.json")
     R = probe["request_throughput"]
-    steps, base_ttft, sat = [], None, None
-    fracs = list(RAMP_FRACS)
-    i = 0
-    while i < len(fracs):
-        f = fracs[i]
-        rate = round(f * R, 4)
-        r = bench(model, dataset, RAMP_N, rate, 0, f"{d}/step_{f:.2f}R.json")
-        s = {"frac_of_R": f, "rate_rps": rate, **step_stats(r)}
-        if base_ttft is None:
-            base_ttft = s["median_ttft_ms"]
-        s["ttft_over_base"] = s["median_ttft_ms"] / base_ttft
-        s["pass"] = bool(s["served_over_offered"] >= THRU_MIN and s["ttft_over_base"] <= TTFT_MAX_X
-                         and s["failed"] == 0)
-        steps.append(s)
-        log(f"  step {f:.2f}R rate={rate:.3f} served/offered={s['served_over_offered']:.3f} "
-            f"ttft x{s['ttft_over_base']:.2f} -> {'PASS' if s['pass'] else 'FAIL'}")
-        if not s["pass"]:
-            break
-        sat = rate
-        if i == len(fracs) - 1 and fracs[-1] < EXT_FRACS[-1]:
-            fracs += [x for x in EXT_FRACS if x > fracs[-1]][:1]
-        i += 1
-    if sat is None:
-        raise RuntimeError(f"no passing ramp step for {model}/{dataset}; lowest step already saturated")
-    dec = dict(gpu=GPU_NAME, model=model, dataset=dataset, baseline_chunk=BASELINE, seed=0,
-               prompts_per_step=RAMP_N, probe_inf_rps=R, criterion=dict(
-                   served_over_offered_min=THRU_MIN, median_ttft_max_x_lowest_step=TTFT_MAX_X,
-                   served_over_offered="1/(1+max(0, Theil-Sen slope of e2e latency vs arrival time))"),
-               saturation_rps=sat, saturation_capped_by_ramp=bool(steps[-1]["pass"]),
-               sweep_frac=SWEEP_FRAC, sweep_rate_rps=round(SWEEP_FRAC * sat, 4), steps=steps)
-    json.dump(dec, open(dec_path, "w"), indent=2)
-    log(f"RAMP {model}/{dataset}: R={R:.3f} saturation={sat:.3f} -> sweep rate {dec['sweep_rate_rps']:.3f} rps")
-    return dec
+    rec = dict(gpu=GPU_NAME, model=model, dataset=dataset, baseline_chunk=BASELINE, seed=0,
+               probe_prompts=PROBE_N, probe_inf_rps=R, rate_frac=RATE_FRACS[0],
+               rate_rps=round(RATE_FRACS[0] * R, 4), check=None, failed_attempts=[])
+    json.dump(rec, open(path, "w"), indent=2)
+    log(f"RATE {model}/{dataset}: R={R:.3f} -> rate {rec['rate_rps']:.3f} rps")
+    return rec
+
+
+def rate_path(model, dataset):
+    return f"{PROBE_DIR}/{model}/{dataset}/rate.json"
+
+
+def check_passed(model, dataset):
+    rec = json.load(open(rate_path(model, dataset)))
+    return bool(rec.get("check") and rec["check"].get("pass"))
+
+
+def check_and_adjust(model, dataset, seed, r, out_json):
+    """Keep-up check on the baseline run. Returns ("pass", rate), ("retry", new_rate) or
+    ("exhausted", None). On failure the result files are renamed out of the way first, so a
+    crash before rate.json is updated just re-runs the check at the same rate."""
+    path = rate_path(model, dataset)
+    rec = json.load(open(path))
+    s = step_stats(r)
+    s["pass"] = bool(s["served_over_offered"] >= THRU_MIN and s["failed"] == 0)
+    frac = rec.get("rate_frac", RATE_FRACS[0])
+    check = dict(run=f"chunk-{BASELINE} seed{seed}", rate_frac=frac, rate_rps=rec["rate_rps"],
+                 served_over_offered_min=THRU_MIN, **s)
+    log(f"CHECK {model}/{dataset} @ {frac:.2f}R: served/offered={s['served_over_offered']:.3f} "
+        f"failed={s['failed']} -> {'PASS' if s['pass'] else 'FAIL'}")
+    if s["pass"]:
+        rec["check"] = check
+        json.dump(rec, open(path, "w"), indent=2)
+        return "pass", rec["rate_rps"]
+    stem = out_json[:-5]
+    for ext in (".json", ".log"):
+        if os.path.exists(stem + ext):
+            os.replace(stem + ext, f"{stem}_frac{frac:.2f}_failed{ext}")
+    rec.setdefault("failed_attempts", []).append(check)
+    lower = [f for f in RATE_FRACS if f < frac - 1e-9]
+    if not lower:
+        rec["check"] = check
+        json.dump(rec, open(path, "w"), indent=2)
+        return "exhausted", None
+    rec["rate_frac"] = lower[0]
+    rec["rate_rps"] = round(lower[0] * rec["probe_inf_rps"], 4)
+    rec["check"] = None
+    json.dump(rec, open(path, "w"), indent=2)
+    log(f"  lowering {model}/{dataset} to {lower[0]:.2f}R = {rec['rate_rps']:.3f} rps and re-checking")
+    return "retry", rec["rate_rps"]
+
+
+def warn_if_behind(model, dataset, chunk, seed, r):
+    s = step_stats(r)
+    if s["served_over_offered"] < THRU_MIN or s["failed"]:
+        log(f"  WARN {model}/{dataset} chunk-{chunk} seed{seed} did not keep up: "
+            f"served/offered={s['served_over_offered']:.3f} failed={s['failed']} (run kept)")
 
 
 def main():
@@ -199,24 +231,52 @@ def main():
     signal.signal(signal.SIGTERM, lambda *a: (srv.stop(), sys.exit(1)))
     try:
         for model in MODELS:
-            rates = {ds: ramp(srv, model, ds)["sweep_rate_rps"] for ds in DATASETS}
-            json.dump(rates, open(f"{RAMP_DIR}/{model}/sweep_rates.json", "w"), indent=2)
-            # baseline chunk first: its server is already up from the ramp
+            rates = {ds: get_rate(srv, model, ds)["rate_rps"] for ds in DATASETS}
+            rates_file = f"{PROBE_DIR}/{model}/sweep50_rates.json"
+            json.dump(rates, open(rates_file, "w"), indent=2)
+            skipped = set()
+            # baseline chunk first: its server is already up from the probes
             for chunk in sorted(CHUNKS, key=lambda c: c != BASELINE):
                 for ds in DATASETS:
+                    if ds in skipped:
+                        continue
                     for seed in SEEDS:
                         out = f"{SWEEP_DIR}/{model}/chunk-{chunk}/{ds}_seed{seed}.json"
                         if os.path.exists(out):
                             continue
-                        srv.ensure(model, chunk, f"{SWEEP_DIR}/{model}/chunk-{chunk}/server.log")
-                        try:
-                            bench(model, ds, SWEEP_N, rates[ds], seed, out)
-                        except RuntimeError as e:
-                            log(f"  FAILED {e}")
-                            if not srv.alive():
-                                log("  server gone; restarting for next run")
-                                srv.key = None
+                        # the first baseline run that completes is the keep-up check; nothing else
+                        # for this (model, dataset) runs until a rate has passed it
+                        is_check = chunk == BASELINE and not check_passed(model, ds)
+                        if not is_check and not check_passed(model, ds):
+                            continue
+                        while True:
+                            srv.ensure(model, chunk, f"{SWEEP_DIR}/{model}/chunk-{chunk}/server.log")
+                            try:
+                                r = bench(model, ds, SWEEP_N, rates[ds], seed, out)
+                            except RuntimeError as e:
+                                log(f"  FAILED {e}")
+                                if not srv.alive():
+                                    log("  server gone; restarting for next run")
+                                    srv.key = None
+                                r = None
+                                break
+                            if not is_check:
+                                warn_if_behind(model, ds, chunk, seed, r)
+                                break
+                            status, new_rate = check_and_adjust(model, ds, seed, r, out)
+                            if status == "pass":
+                                break
+                            if status == "exhausted":
+                                log(f"SKIP {model}/{ds}: no rate in {RATE_FRACS} keeps up; "
+                                    f"continuing with the rest")
+                                skipped.add(ds)
+                                break
+                            rates[ds] = new_rate
+                            json.dump(rates, open(rates_file, "w"), indent=2)
+                            time.sleep(10)
                         time.sleep(10)
+                        if ds in skipped:
+                            break
             srv.stop()
         log("ALL DONE")
     finally:

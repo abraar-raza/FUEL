@@ -1,0 +1,23 @@
+{
+  "gpu": "H100-80GB-HBM3",
+  "model": "Qwen2.5-3B-Instruct",
+  "dataset": "sharegpt",
+  "baseline_chunk": "2048",
+  "seed": 0,
+  "probe_prompts": 100,
+  "probe_inf_rps": 9.533659413586971,
+  "rate_frac": 0.5,
+  "rate_rps": 4.7668,
+  "check": {
+    "run": "chunk-2048 seed0",
+    "served_over_offered_min": 0.95,
+    "offered_rps": 4.922902925148363,
+    "latency_slope": -0.0003803027604201255,
+    "served_rps": 4.922902925148363,
+    "served_over_offered": 1.0,
+    "median_ttft_ms": 34.96806850307621,
+    "harness_rps": 4.379817402962456,
+    "failed": 0,
+    "pass": true
+  }
+}

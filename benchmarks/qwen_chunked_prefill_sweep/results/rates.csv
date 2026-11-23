@@ -1,0 +1,5 @@
+gpu,model,dataset,baseline_chunk,probe_inf_rps,rate_frac,rate_rps,check_served_over_offered,check_failed,check_pass
+H100-80GB-HBM3,Qwen2.5-14B-Instruct,arxiv,2048,1.223483397105773,0.5,0.6117,1.0,0,True
+H100-80GB-HBM3,Qwen2.5-14B-Instruct,sharegpt,2048,3.176725334248665,0.5,1.5884,1.0,0,True
+H100-80GB-HBM3,Qwen2.5-3B-Instruct,arxiv,2048,4.97223703603316,0.5,2.4861,1.0,0,True
+H100-80GB-HBM3,Qwen2.5-3B-Instruct,sharegpt,2048,9.533659413586971,0.5,4.7668,1.0,0,True

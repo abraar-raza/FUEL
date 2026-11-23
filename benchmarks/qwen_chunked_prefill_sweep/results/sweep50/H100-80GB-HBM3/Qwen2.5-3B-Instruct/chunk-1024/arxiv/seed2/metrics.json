@@ -1,0 +1,71 @@
+{
+  "gpu": {
+    "0": {
+      "avg_power_w": 490.77063952254645,
+      "avg_gpu_util_pct": 94.84588859416445,
+      "avg_mem_util_pct": 98.7319762380608,
+      "power_w": {
+        "min_power": 198.602,
+        "power_5p": 337.373,
+        "power_25p": 439.832,
+        "median_power": 487.9895,
+        "power_75p": 547.072,
+        "power_95p": 624.559,
+        "max_power": 668.707,
+        "power_std": 82.10846938964079
+      },
+      "n_samples": 3770
+    }
+  },
+  "model": "Qwen2.5-3B-Instruct",
+  "chunk": "1024",
+  "dataset": "arxiv",
+  "seed": 2,
+  "date": "20261122-202618",
+  "num_prompts": 250,
+  "request_rate": 2.4861,
+  "duration": 94.94231534004211,
+  "start_time": 1795379069.3490086,
+  "end_time": 1795379164.291324,
+  "completed": 250,
+  "total_input_tokens": 2041894,
+  "total_output_tokens": 57838,
+  "request_throughput": 2.6331778312400393,
+  "output_throughput": 609.1909576130455,
+  "total_token_throughput": 22115.87101578124,
+  "failed": 0,
+  "latency_ms": {
+    "mean_ttft_ms": 278.8798431016039,
+    "median_ttft_ms": 222.85196601296775,
+    "std_ttft_ms": 189.43652565922102,
+    "p99_ttft_ms": 942.6369001338007,
+    "mean_tpot_ms": 6.409404575665603,
+    "median_tpot_ms": 5.959207564082734,
+    "std_tpot_ms": 2.026435788139156,
+    "p99_tpot_ms": 12.147181539334104,
+    "mean_itl_ms": 6.4941234507692815,
+    "median_itl_ms": 4.361327970400453,
+    "std_itl_ms": 5.380874704389965,
+    "p99_itl_ms": 23.82570830057375,
+    "mean_e2el_ms": 1693.7786449852865,
+    "median_e2el_ms": 1754.8062156417873,
+    "std_e2el_ms": 638.0906059609908,
+    "p99_e2el_ms": 3646.3832901825645
+  },
+  "energy": {
+    "total_energy": 46594.90081718374,
+    "energy_per_request": 186.37960326873497,
+    "energy_per_token": 0.022190879987152523
+  },
+  "carbon": {
+    "operational_carbon": 6.859804842529828,
+    "embodied_carbon": 0.011440284065580926,
+    "total_carbon": 6.871245126595409,
+    "operational_carbon_per_request": 0.02743921937011931,
+    "operational_carbon_per_token": 3.2669906647752323e-06,
+    "embodied_carbon_per_request": 4.576113626232371e-05,
+    "embodied_carbon_per_token": 5.448449642897725e-09,
+    "carbon_per_request": 0.027484980506381637,
+    "carbon_per_token": 3.2724391144181298e-06
+  }
+}

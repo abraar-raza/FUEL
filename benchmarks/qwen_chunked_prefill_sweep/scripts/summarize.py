@@ -2,7 +2,8 @@
 """Convert raw benchmark_serving.py result JSONs into the committed, structured layout.
 
 Raw JSONs (with prompts, generated texts, per-token ITLs) stay out of git; this keeps
-everything needed to analyse throughput, latency and energy.
+everything needed to analyse throughput, latency and energy. Incomplete or unreadable raw
+JSONs (e.g. a run still being written) are skipped, so this can be run mid-sweep.
 
 Usage:
   summarize.py --raw-root /workspace/results --out <repo>/benchmarks/qwen_chunked_prefill_sweep/results
@@ -13,8 +14,6 @@ import gzip
 import json
 import os
 import re
-import statistics as st
-from collections import defaultdict
 
 SCALARS = [
     "date", "num_prompts", "request_rate", "duration", "start_time", "end_time", "completed",
@@ -71,87 +70,155 @@ def write_run(raw: dict, meta: dict, d: str, monitor_interval: float):
                 f.write(f"{i},{p},{mu:.3f}\n")
 
 
+def load(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"skip {path}: {e}")
+        return None
+
+
+def subdirs(d):
+    return sorted(x for x in os.listdir(d) if os.path.isdir(os.path.join(d, x))) if os.path.isdir(d) else []
+
+
+def summary_row(c: dict) -> dict:
+    g = next(iter(c["gpu"].values()), {})
+    e = c["energy"] or {}
+    lat = c["latency_ms"]
+    return dict(
+        completed=c["completed"], failed=c["failed"], duration_s=c["duration"],
+        request_rate=c["request_rate"],
+        request_throughput_rps=c["request_throughput"],
+        output_throughput_tps=c["output_throughput"],
+        total_token_throughput_tps=c["total_token_throughput"],
+        median_ttft_ms=lat.get("median_ttft_ms"), p99_ttft_ms=lat.get("p99_ttft_ms"),
+        mean_tpot_ms=lat.get("mean_tpot_ms"), p99_tpot_ms=lat.get("p99_tpot_ms"),
+        median_e2el_ms=lat.get("median_e2el_ms"), p99_e2el_ms=lat.get("p99_e2el_ms"),
+        avg_power_w=g.get("avg_power_w"),
+        total_energy_j=e.get("total_energy"),
+        energy_per_request_j=e.get("energy_per_request"),
+        energy_per_token_j=e.get("energy_per_token"),
+    )
+
+
+def write_csv(path, rows):
+    if not rows:
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+
+
+chunk_key = lambda c: -1 if c == "none" else int(c)
+
+
+def do_ramp(a):
+    """ramp/<gpu>/<model>/<dataset>/{decision.json, probe_inf.json, step_<f>R.json}"""
+    root = os.path.join(a.raw_root, "ramp")
+    sat_rows, rate_rows = [], []
+    for gpu in subdirs(root):
+        for model in subdirs(os.path.join(root, gpu)):
+            for ds in subdirs(os.path.join(root, gpu, model)):
+                src = os.path.join(root, gpu, model, ds)
+                dst = os.path.join(a.out, "ramp", gpu, model, ds)
+                for fn in sorted(os.listdir(src)):
+                    mm = re.match(r"(probe_inf|step_[\d.]+R)\.json$", fn)
+                    if not mm:
+                        continue
+                    raw = load(os.path.join(src, fn))
+                    if raw is None:
+                        continue
+                    meta = dict(gpu=gpu, model=model, chunk="2048", dataset=ds, seed=0,
+                                ramp_point=mm.group(1))
+                    write_run(raw, meta, os.path.join(dst, mm.group(1)), a.monitor_interval)
+                if os.path.exists(os.path.join(src, "rate.json")):
+                    rec = load(os.path.join(src, "rate.json"))
+                    if rec is not None:
+                        os.makedirs(dst, exist_ok=True)
+                        with open(os.path.join(dst, "rate.json"), "w") as f:
+                            json.dump(rec, f, indent=2)
+                        chk = rec.get("check") or {}
+                        rate_rows.append(dict(
+                            gpu=gpu, model=model, dataset=ds, baseline_chunk=rec["baseline_chunk"],
+                            probe_inf_rps=rec["probe_inf_rps"], rate_frac=rec["rate_frac"],
+                            rate_rps=rec["rate_rps"],
+                            check_served_over_offered=chk.get("served_over_offered"),
+                            check_failed=chk.get("failed"), check_pass=chk.get("pass")))
+                dec = load(os.path.join(src, "decision.json")) if os.path.exists(
+                    os.path.join(src, "decision.json")) else None
+                if dec is None:
+                    continue
+                os.makedirs(dst, exist_ok=True)
+                with open(os.path.join(dst, "decision.json"), "w") as f:
+                    json.dump(dec, f, indent=2)
+                last = dec["steps"][-1]
+                sat_rows.append(dict(
+                    gpu=gpu, model=model, dataset=ds, baseline_chunk=dec["baseline_chunk"],
+                    probe_inf_rps=dec["probe_inf_rps"], saturation_rps=dec["saturation_rps"],
+                    saturation_frac_of_R=dec["saturation_rps"] / dec["probe_inf_rps"],
+                    saturation_capped_by_ramp=dec["saturation_capped_by_ramp"],
+                    sweep_frac=dec["sweep_frac"], sweep_rate_rps=dec["sweep_rate_rps"],
+                    n_steps=len(dec["steps"]),
+                    first_failing_step=None if last["pass"] else last["frac_of_R"],
+                    first_failing_served_over_offered=None if last["pass"] else last["served_over_offered"],
+                ))
+    write_csv(os.path.join(a.out, "ramp", "saturation_rates.csv"), sat_rows)
+    write_csv(os.path.join(a.out, "rates.csv"), rate_rows)
+    print(f"ramp: {len(sat_rows)} saturation decisions, {len(rate_rows)} sweep rates")
+
+
+def do_sweep(a):
+    """sweep50/<gpu>/<model>/chunk-<c>/<dataset>_seed<s>.json"""
+    root = os.path.join(a.raw_root, "sweep50")
+    rows = []
+    for gpu in subdirs(root):
+        for model in subdirs(os.path.join(root, gpu)):
+            for cdir in subdirs(os.path.join(root, gpu, model)):
+                cm = re.match(r"chunk-(\w+)$", cdir)
+                if not cm:
+                    continue
+                chunk = cm.group(1)
+                src = os.path.join(root, gpu, model, cdir)
+                for fn in sorted(os.listdir(src)):
+                    fm = re.match(r"(\w+)_seed(\d+)\.json$", fn)
+                    if not fm:
+                        continue
+                    raw = load(os.path.join(src, fn))
+                    if raw is None:
+                        continue
+                    ds, seed = fm.group(1), int(fm.group(2))
+                    meta = dict(gpu=gpu, model=model, chunk=chunk, dataset=ds, seed=seed)
+                    write_run(raw, meta, os.path.join(a.out, "sweep50", gpu, model, cdir, ds,
+                                                      f"seed{seed}"), a.monitor_interval)
+                    rows.append({**meta, **summary_row(compact(raw, meta))})
+    rows.sort(key=lambda r: (r["gpu"], r["model"], r["dataset"], chunk_key(r["chunk"]), r["seed"]))
+    write_csv(os.path.join(a.out, "sweep50", "runs.csv"), rows)
+    print(f"sweep50: {len(rows)} runs")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--raw-root", default="/workspace/results")
     ap.add_argument("--out", required=True)
     ap.add_argument("--monitor-interval", type=float, default=0.025)
-    ap.add_argument("--fraction", type=float, default=0.75)
     a = ap.parse_args()
 
     # smoke
     sj = os.path.join(a.raw_root, "smoke_3b_512", "smoke_3b_512_sharegpt.json")
-    if os.path.exists(sj):
+    raw = load(sj) if os.path.exists(sj) else None
+    if raw is not None:
         meta = dict(model="Qwen2.5-3B-Instruct", chunk="512", dataset="sharegpt", seed=0)
-        write_run(json.load(open(sj)), meta,
+        write_run(raw, meta,
                   os.path.join(a.out, "smoke", "Qwen2.5-3B-Instruct", "chunk-512", "sharegpt", "seed0"),
                   a.monitor_interval)
+        print("smoke: 1 run")
 
-    # calibration
-    croot = os.path.join(a.raw_root, "calibration")
-    rows = []
-    for tag in sorted(os.listdir(croot)) if os.path.isdir(croot) else []:
-        mm = re.match(r"(.+)_chunk-(\w+)$", tag)
-        if not mm:
-            continue
-        model, chunk = mm.groups()
-        for fn in sorted(os.listdir(os.path.join(croot, tag))):
-            fm = re.match(r"(\w+)_seed(\d+)\.json$", fn)
-            if not fm:
-                continue
-            ds, seed = fm.group(1), int(fm.group(2))
-            raw = json.load(open(os.path.join(croot, tag, fn)))
-            meta = dict(model=model, chunk=chunk, dataset=ds, seed=seed)
-            write_run(raw, meta, os.path.join(a.out, "calibration", "runs", model,
-                                              f"chunk-{chunk}", ds, f"seed{seed}"),
-                      a.monitor_interval)
-            c = compact(raw, meta)
-            g = next(iter(c["gpu"].values()), {})
-            rows.append(dict(
-                model=model, chunk=chunk, dataset=ds, seed=seed,
-                completed=c["completed"], failed=c["failed"], duration_s=c["duration"],
-                request_throughput_rps=c["request_throughput"],
-                output_throughput_tps=c["output_throughput"],
-                total_token_throughput_tps=c["total_token_throughput"],
-                mean_ttft_ms=c["latency_ms"].get("mean_ttft_ms"),
-                p99_ttft_ms=c["latency_ms"].get("p99_ttft_ms"),
-                mean_tpot_ms=c["latency_ms"].get("mean_tpot_ms"),
-                avg_power_w=g.get("avg_power_w"),
-                total_energy_j=(c["energy"] or {}).get("total_energy"),
-                energy_per_request_j=(c["energy"] or {}).get("energy_per_request"),
-                energy_per_token_j=(c["energy"] or {}).get("energy_per_token"),
-            ))
-    if not rows:
-        return
-    chunk_key = lambda c: -1 if c == "none" else int(c)
-    rows.sort(key=lambda r: (r["model"], chunk_key(r["chunk"]), r["dataset"], r["seed"]))
-    cdir = os.path.join(a.out, "calibration")
-    with open(os.path.join(cdir, "runs.csv"), "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0]))
-        w.writeheader(); w.writerows(rows)
-
-    grp = defaultdict(list)
-    for r in rows:
-        grp[(r["model"], r["chunk"], r["dataset"])].append(r)
-    agg, lookup = [], {}
-    for (model, chunk, ds), rs in sorted(grp.items(), key=lambda kv: (kv[0][0], chunk_key(kv[0][1]), kv[0][2])):
-        x = [r["request_throughput_rps"] for r in rs]
-        mean = st.mean(x)
-        rate = a.fraction * mean
-        agg.append(dict(model=model, chunk=chunk, dataset=ds, n_seeds=len(rs),
-                        seeds=" ".join(str(r["seed"]) for r in rs),
-                        saturation_rps_mean=mean, saturation_rps_std=st.stdev(x) if len(x) > 1 else 0.0,
-                        saturation_rps_min=min(x), saturation_rps_max=max(x),
-                        **{f"rate_{int(a.fraction*100)}pct_rps": rate}))
-        lookup.setdefault(model, {}).setdefault(ds, {})[chunk] = round(rate, 4)
-    with open(os.path.join(cdir, "saturation_rates.csv"), "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(agg[0]))
-        w.writeheader(); w.writerows(agg)
-    with open(os.path.join(cdir, f"sweep_rates_{int(a.fraction*100)}pct.json"), "w") as f:
-        json.dump({"fraction_of_saturation": a.fraction,
-                   "definition": "fraction * mean(request_throughput at request_rate=inf) over seeds",
-                   "rates_rps": lookup}, f, indent=2)
-    print(f"{len(rows)} runs, {len(agg)} groups -> {cdir}")
+    do_ramp(a)
+    do_sweep(a)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,3 @@
+gpu,model,dataset,baseline_chunk,probe_inf_rps,saturation_rps,saturation_frac_of_R,saturation_capped_by_ramp,sweep_frac,sweep_rate_rps,n_steps,first_failing_step,first_failing_served_over_offered
+H100-80GB-HBM3,Qwen2.5-3B-Instruct,arxiv,2048,4.97223703603316,4.9722,0.9999925514345169,False,0.75,3.7291,8,1.25,1.0
+H100-80GB-HBM3,Qwen2.5-3B-Instruct,sharegpt,2048,9.533659413586971,5.7202,0.60000045647192,False,0.75,4.2902,4,0.7,0.9494792510878117
