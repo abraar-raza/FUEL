@@ -1,4 +1,4 @@
-# Qwen2.5 chunked-prefill energy sweep
+# H100 chunked-prefill sweep
 
 For each GPU-model-dataset combination, measure the burst throughput R at a fixed baseline chunk
 size (2048), then run every chunk size at a Poisson rate of 0.5 R. Measures throughput, latency
