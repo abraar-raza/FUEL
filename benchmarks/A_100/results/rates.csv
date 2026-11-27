@@ -1,0 +1,5 @@
+gpu,model,dataset,baseline_chunk,probe_inf_rps,rate_frac,rate_rps,check_served_over_offered,check_failed,check_pass
+A100-80GB-PCIe,Qwen2.5-14B-Instruct,arxiv,2048,0.37057053096920345,0.5,0.1853,1.0,0,True
+A100-80GB-PCIe,Qwen2.5-14B-Instruct,sharegpt,2048,1.6415513746638208,0.5,0.8208,0.9990635960812632,0,True
+A100-80GB-PCIe,Qwen2.5-3B-Instruct,arxiv,2048,1.1956111094414754,0.5,0.5978,1.0,0,True
+A100-80GB-PCIe,Qwen2.5-3B-Instruct,sharegpt,2048,5.384862121059771,0.5,2.6924,1.0,0,True

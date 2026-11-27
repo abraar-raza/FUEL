@@ -1,0 +1,26 @@
+{
+  "gpu": "A100-80GB-PCIe",
+  "model": "Qwen2.5-14B-Instruct",
+  "dataset": "arxiv",
+  "baseline_chunk": "2048",
+  "seed": 0,
+  "probe_prompts": 100,
+  "probe_inf_rps": 0.37057053096920345,
+  "rate_frac": 0.5,
+  "rate_rps": 0.1853,
+  "check": {
+    "run": "chunk-2048 seed0",
+    "rate_frac": 0.5,
+    "rate_rps": 0.1853,
+    "served_over_offered_min": 0.95,
+    "offered_rps": 0.19187641523071614,
+    "latency_slope": -0.00034130118006890734,
+    "served_rps": 0.19187641523071614,
+    "served_over_offered": 1.0,
+    "median_ttft_ms": 1444.1843384411186,
+    "harness_rps": 0.19077376447314315,
+    "failed": 0,
+    "pass": true
+  },
+  "failed_attempts": []
+}
